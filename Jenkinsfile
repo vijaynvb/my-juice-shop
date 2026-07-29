@@ -2,7 +2,7 @@ pipeline {
     agent any
 
     tools {
-        nodejs 'node24'
+      nodejs 'node24'
     }
 
 
@@ -45,7 +45,6 @@ pipeline {
         disableConcurrentBuilds()
     }
 
-
     stages {
 
         stage('Checkout') {
@@ -74,5 +73,152 @@ pipeline {
             }
         }
 
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    script {
+                        def qg = waitForQualityGate abortPipeline: false
+                        echo "SonarCloud Quality Gate status: ${qg.status}"
+                        if (qg.status != 'OK' && params.ENFORCE_SONAR_GATE) {
+                            error "Pipeline aborted: SonarCloud Quality Gate status is ${qg.status} and ENFORCE_SONAR_GATE is true."
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('SCA - Snyk') {
+            steps {
+                sh 'mkdir -p ${REPORT_DIR}'
+                sh '''
+                    npx snyk auth ${SNYK_TOKEN}
+                    set +e
+                    npx snyk test --json-file-output=${REPORT_DIR}/snyk-report.json --severity-threshold=critical
+                    SNYK_EXIT_CODE=$?
+                    set -e
+                    echo "Snyk exit code: ${SNYK_EXIT_CODE}"
+                    if [ "${SNYK_EXIT_CODE}" != "0" ] && [ "${ENFORCE_SNYK_GATE}" = "true" ]; then
+                        echo "Pipeline aborted: critical Snyk vulnerabilities found and ENFORCE_SNYK_GATE is true."
+                        exit 1
+                    fi
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: "${REPORT_DIR}/snyk-report.json", allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('Build Docker image') {
+            steps {
+                sh 'docker build -t ${IMAGE_NAME}:${BUILD_NUMBER} .'
+            }
+        }
+
+        stage('Container Scan - Trivy') {
+            steps {
+                sh 'mkdir -p ${REPORT_DIR}'
+                sh '''
+                    docker run --rm \
+                      -v /var/run/docker.sock:/var/run/docker.sock \
+                      -v ${WORKSPACE}/${REPORT_DIR}:/reports \
+                      aquasec/trivy:latest image \
+                      --format json \
+                      --output /reports/trivy-report.json \
+                      ${IMAGE_NAME}:${BUILD_NUMBER}
+
+                    set +e
+                    docker run --rm \
+                      -v /var/run/docker.sock:/var/run/docker.sock \
+                      aquasec/trivy:latest image \
+                      --exit-code 1 \
+                      --severity CRITICAL \
+                      ${IMAGE_NAME}:${BUILD_NUMBER}
+                    TRIVY_EXIT_CODE=$?
+                    set -e
+                    echo "Trivy exit code: ${TRIVY_EXIT_CODE}"
+                    if [ "${TRIVY_EXIT_CODE}" != "0" ] && [ "${ENFORCE_TRIVY_GATE}" = "true" ]; then
+                        echo "Pipeline aborted: critical Trivy vulnerabilities found and ENFORCE_TRIVY_GATE is true."
+                        exit 1
+                    fi
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: "${REPORT_DIR}/trivy-report.json", allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('Run app for DAST') {
+            steps {
+                sh '''
+                    docker rm -f ${CONTAINER_NAME} || true
+                    docker run -d --name ${CONTAINER_NAME} -p ${APP_PORT}:3000 ${IMAGE_NAME}:${BUILD_NUMBER}
+
+                    echo "Waiting for Juice Shop to become ready..."
+                    for i in $(seq 1 30); do
+                        if curl -sf http://localhost:${APP_PORT} > /dev/null; then
+                            echo "App is up"
+                            break
+                        fi
+                        sleep 2
+                    done
+                '''
+            }
+        }
+
+        stage('DAST - OWASP ZAP') {
+            steps {
+                // ZAP writes/reads files relative to /zap/wrk, so the whole
+                // report dir (not a subpath) must be the mount target, and
+                // rules.tsv must be copied inside it first.
+                //
+                // ENFORCE_ZAP_GATE=false (default) uses rules.tsv, where High-risk
+                // rules are WARN, so zap-baseline.py never exits 2 (Juice Shop is
+                // deliberately full of High-risk findings). ENFORCE_ZAP_GATE=true
+                // uses rules-strict.tsv, where High-risk rules are FAIL, so the
+                // stage aborts the pipeline on any High-risk alert.
+                sh '''
+                    mkdir -p ${WORKSPACE}/${REPORT_DIR}
+                    if [ "${ENFORCE_ZAP_GATE}" = "true" ]; then
+                        cp ${WORKSPACE}/.zap/rules-strict.tsv ${WORKSPACE}/${REPORT_DIR}/rules.tsv
+                    else
+                        cp ${WORKSPACE}/.zap/rules.tsv ${WORKSPACE}/${REPORT_DIR}/rules.tsv
+                    fi
+
+                    docker run --rm \
+                      --network host \
+                      -v ${WORKSPACE}/${REPORT_DIR}:/zap/wrk:rw \
+                      ghcr.io/zaproxy/zaproxy:stable \
+                      zap-baseline.py \
+                        -t http://localhost:${APP_PORT} \
+                        -r zap-report.html \
+                        -J zap-report.json \
+                        -c rules.tsv \
+                        -a
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: "${REPORT_DIR}/zap-report.*", allowEmptyArchive: true
+                    publishHTML(target: [
+                        reportDir: "${REPORT_DIR}",
+                        reportFiles: 'zap-report.html',
+                        reportName: 'ZAP DAST Report',
+                        keepAll: true,
+                        alwaysLinkToLastBuild: true
+                    ])
+                }
+            }
+        }
     }
+
+    post {
+        always {
+            sh 'docker rm -f ${CONTAINER_NAME} || true'
+        }
+    }
+
 }
