@@ -55,45 +55,31 @@ pipeline {
 
         stage('Install Docker CLI') {
             steps {
-                script {
-                    if (isUnix()) {
-                        sh '''
-                            if command -v docker >/dev/null 2>&1; then
-                                echo "Docker CLI already present"
-                            else
-                                echo "Docker CLI not found, installing..."
-                                apt-get update -y
-                                apt-get install -y ca-certificates curl gnupg
-                                install -m 0755 -d /etc/apt/keyrings
-                                curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
-                                chmod a+r /etc/apt/keyrings/docker.asc
-                                echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list
-                                apt-get update -y
-                                apt-get install -y docker-ce-cli
-                            fi
-                            docker --version
-                        '''
-                    } else {
-                        powershell '''
-                            $ErrorActionPreference = 'Stop'
+                sh '''
+                    set -e
 
-                            if (Get-Command docker -ErrorAction SilentlyContinue) {
-                                Write-Host 'Docker CLI already present'
-                                docker --version
-                                exit 0
-                            }
+                    if [ "$(id -u)" -eq 0 ]; then
+                        SUDO=""
+                    else
+                        SUDO="sudo"
+                    fi
 
-                            Write-Host 'Docker CLI not found. Installing via Chocolatey...'
-
-                            if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
-                                throw 'Chocolatey is not installed on this Windows agent. Install Docker CLI (or Docker Desktop/Engine) and ensure docker.exe is in PATH.'
-                            }
-
-                            choco install docker-cli -y --no-progress
-                            docker --version
-                        '''
-                    }
-                }
+                    if command -v docker >/dev/null 2>&1; then
+                        echo "Docker CLI already present"
+                    else
+                        echo "Docker CLI not found, installing..."
+                        $SUDO mkdir -p /var/lib/apt/lists/partial
+                        $SUDO apt-get update -y
+                        $SUDO apt-get install -y ca-certificates curl gnupg
+                        $SUDO install -m 0755 -d /etc/apt/keyrings
+                        curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+                        $SUDO chmod a+r /etc/apt/keyrings/docker.asc
+                        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo $VERSION_CODENAME) stable" | $SUDO tee /etc/apt/sources.list.d/docker.list > /dev/null
+                        $SUDO apt-get update -y
+                        $SUDO apt-get install -y docker-ce-cli
+                    fi
+                    docker --version
+                '''
             }
         }
 
