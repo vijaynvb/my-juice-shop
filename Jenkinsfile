@@ -53,7 +53,7 @@ pipeline {
             }
         }
 
-        stage('Install Docker CLI') {
+        stage('checkuser') {
             steps {
                 sh '''
                     whoami
