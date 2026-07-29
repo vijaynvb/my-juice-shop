@@ -1,8 +1,3 @@
-# how to invoke the pipeline 
-# workspace windows, mac, unix
-# tools for running your pipeline 
-# stages for descrbing the task which you pipeline has to do
-
 pipeline {
     agent any
 
@@ -34,6 +29,23 @@ pipeline {
         )
     }
 
+
+    environment {
+        SONAR_TOKEN     = credentials('sonar-token')
+        SNYK_TOKEN      = credentials('snyk-token')
+        IMAGE_NAME      = 'juice-shop-local'
+        CONTAINER_NAME  = 'juice-shop-dast'
+        APP_PORT        = '3000'
+        REPORT_DIR      = 'reports'
+        NODE_OPTIONS    = '--max-old-space-size=4096'
+    }
+
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+    }
+
+
     stages {
 
         stage('Checkout') {
@@ -56,7 +68,7 @@ pipeline {
                           -Dsonar.projectKey=vijaynvb_my-juice-shop \
                           -Dsonar.organization=vijaynvb \
                           -Dsonar.host.url=https://sonarcloud.io \
-                          -Dsonar.token=${SONAR-TOKEN}
+                          -Dsonar.token=${SONAR_TOKEN}
                     '''
                 }
             }
