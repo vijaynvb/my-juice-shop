@@ -56,6 +56,14 @@ pipeline {
         stage('Install Docker CLI') {
             steps {
                 sh '''
+                    whoami
+                    id  
+                  '''
+            }
+        }
+        stage('Install Docker CLI') {
+            steps {
+                sh '''
                     if command -v docker >/dev/null 2>&1; then
                         echo "Docker CLI already present"
                     else
